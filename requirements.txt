@@ -1,0 +1,34 @@
+# Core Web Framework & Server
+fastapi
+uvicorn[standard]
+
+# AI/ML Orchestration Framework
+langchain
+langchain-community
+langchain-openai
+
+# Document Parsing & Ingestion
+PyMuPDF         # For fast PDF text extraction (also known as fitz) [1, 2]
+pdfplumber      # For robust PDF table extraction [3, 4, 2]
+python-docx     # For parsing Microsoft Word.docx files [5, 2]
+extract-msg     # For parsing Microsoft Outlook.msg and.eml email files [6, 7, 2]
+unstructured    # A versatile library for parsing various document types [2, 8]
+
+# Embedding, Vector Search & Retrieval
+sentence-transformers # For generating embeddings and for the re-ranking model [9, 2]
+rank_bm25             # For keyword-based (sparse) retrieval in the hybrid search [2]
+
+# Choose one of the following FAISS libraries based on your hardware:
+faiss-cpu             # For CPU-based vector similarity search [10, 11, 2]
+faiss-gpu           # Uncomment this line and comment out faiss-cpu if you have a CUDA-enabled GPU
+
+# LLM Interaction
+openai                # Official Python client for the OpenAI API (GPT-4)
+
+# Utilities
+python-dotenv         # For managing environment variables (e.g., API keys)
+requests              # For downloading documents from URLs [10, 12]
+pydantic              # For data validation, used heavily by FastAPI
+
+# Optional UI for Demo
+streamlit             # For creating a quick and effective user interface for the demo [13, 14]
