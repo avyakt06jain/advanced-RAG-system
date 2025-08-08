@@ -1,17 +1,15 @@
 import fitz
-from collections import defaultdict
+import json
 import camelot
+from collections import defaultdict
 from langchain_core.documents import Document
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
+import time
+import os
 
-"""
-PHASE 1: Extract the pages that potentially contains tables
-- run pymupdf through the document and extract page numbers which potentially have tables
-
-Input: document
-Output: list of page numbers which contains table
-"""
-
-def classify_pages(doc: fitz.Document):
+def classify_pages(pdf_path: str):
+    doc = fitz.open(pdf_path)
     table_pages = []
     TOLERANCE = 5
     MIN_COLUMNS = 2
@@ -19,40 +17,25 @@ def classify_pages(doc: fitz.Document):
 
     for page in doc:
         column_counts = defaultdict(int)
-        
         blocks = page.get_text("blocks")
-        
+
         for block in blocks:
-            if block[6] == 0: 
+            if block[6] == 0:
                 x0 = round(block[0] / TOLERANCE) * TOLERANCE
                 column_counts[x0] += 1
 
-        valid_columns = 0
-        for count in column_counts.values():
-            if count >= MIN_ITEMS_PER_COLUMN:
-                valid_columns += 1
-
+        valid_columns = sum(1 for count in column_counts.values() if count >= MIN_ITEMS_PER_COLUMN)
         if valid_columns >= MIN_COLUMNS:
             table_pages.append(page.number)
-            
+
     return table_pages
-
-"""
-PHASE 2: Extract tables from the pages
-- Run camelot through the pages and extract data and formats them as elements
-
-Input: pdf_path, page_num
-Output: list of dictionary where each elements contains table data
-"""
 
 def extract_table_from_page(pdf_path: str, page_num: int):
     table_elements = []
     try:
         tables = camelot.read_pdf(pdf_path, pages=str(page_num + 1), flavor='lattice')
-        
         for table in tables:
             markdown_table = table.df.to_markdown(index=False)
-
             table_element = {
                 "type": "table",
                 "content": markdown_table,
@@ -60,42 +43,30 @@ def extract_table_from_page(pdf_path: str, page_num: int):
                 "bbox": table._bbox
             }
             table_elements.append(table_element)
-            
     except Exception as e:
         print(f"Warning: Camelot failed on page {page_num + 1}. Error: {e}")
-        
     return table_elements
 
-"""
-PHASE 3: Extract text from pages
-- run pymupdf on pages and extarct texts and format it as elements, filtering out tables, headers and footers
-
-Input: page, table_bboxes
-Output: list of dictionay where each element contains text data
-"""
-
-def extract_text_from_page(page: fitz.Page, table_bboxes: list):
+def extract_text_from_page(pdf_path: str, page_num: int, table_bboxes: list):
     def is_bbox_inside_any(inner_bbox, outer_bboxes):
-        for outer_bbox in outer_bboxes:
-            if (inner_bbox[0] >= outer_bbox[0] and inner_bbox[1] >= outer_bbox[1] and
-                inner_bbox[2] <= outer_bbox[2] and inner_bbox[3] <= outer_bbox[3]):
-                return True
-        return False
+        return any(
+            inner_bbox[0] >= ob[0] and inner_bbox[1] >= ob[1] and
+            inner_bbox[2] <= ob[2] and inner_bbox[3] <= ob[3]
+            for ob in outer_bboxes
+        )
 
     text_elements = []
-
+    doc = fitz.open(pdf_path)
+    page = doc.load_page(page_num)
     header_margin = page.rect.height * 0.08
     footer_margin = page.rect.height * (1 - 0.08)
 
     text_blocks = page.get_text("dict")["blocks"]
-
     for block in text_blocks:
         if block.get("type") == 0 and "lines" in block:
             block_bbox = block["bbox"]
-
             if is_bbox_inside_any(block_bbox, table_bboxes):
                 continue
-
             if block_bbox[1] < header_margin or block_bbox[3] > footer_margin:
                 continue
 
@@ -106,60 +77,73 @@ def extract_text_from_page(page: fitz.Page, table_bboxes: list):
                     block_text += span["text"] + " "
                     if "bold" in span["font"].lower():
                         is_bold = True
-            
+
             cleaned_text = block_text.strip()
             if cleaned_text:
-                element = {
+                text_elements.append({
                     "type": "heading" if is_bold else "paragraph",
                     "content": cleaned_text,
-                    "page_num": page.number,
+                    "page_num": page_num,
                     "bbox": block_bbox
-                }
-                text_elements.append(element)
-                
+                })
+
     return text_elements
 
-"""
-PHASE 4: Creating lanchain document so they can be sent fro chunking
-- Compiling all of the fucntions
-- First run classfiy pages to get page numbers which potentially have tables
-- Then run extract_table_from_page to get table data
-- Then run extract_text_from_page to get text data
+def process_page(pdf_path, page_num, table_pages):
+    table_elements = []
+    table_bboxes = []
+    if page_num in table_pages:
+        table_elements = extract_table_from_page(pdf_path, page_num)
+        table_bboxes = [el["bbox"] for el in table_elements]
 
-Input: pdf_path
-Output: list of lanchain documents
-"""
+    text_elements = extract_text_from_page(pdf_path, page_num, table_bboxes)
+    return table_elements + text_elements
 
 def create_langchain_document(pdf_path: str):
     all_elements = []
 
-    doc = fitz.open(pdf_path)
+    print("Classifying pages...")
+    table_pages = classify_pages(pdf_path)
 
-    table_pages = classify_pages(doc)
+    print("Processing pages in parallel...")
+    with ProcessPoolExecutor() as executor:
+        futures = {
+            executor.submit(process_page, pdf_path, page.number, table_pages): page.number
+            for page in fitz.open(pdf_path)
+        }
 
-    for page in doc:
-        page_num = page.number
-
-        table_bboxes = []
-        if page_num in table_pages:
-            table_elements = extract_table_from_page(pdf_path, page_num)
-            all_elements.extend(table_elements)
-            table_bboxes = [el['bbox'] for el in table_elements]
-
-        text_elements = extract_text_from_page(page, table_bboxes)
-        all_elements.extend(text_elements)
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            try:
+                result = future.result()
+                all_elements.extend(result)
+            except Exception as e:
+                print(f"Error processing page {futures[future]}: {e}")
 
     all_elements.sort(key=lambda el: (el['page_num'], el['bbox'][1]))
-    
+
     langchain_docs = []
     for element in all_elements:
         metadata = {
-            "source": pdf_path.split('/')[-1],
+            "source": os.path.basename(pdf_path),
             "page_number": element['page_num'] + 1,
             "type": element['type'],
             "bounding_box": element['bbox']
         }
-        doc = Document(page_content=element['content'], metadata=metadata)
-        langchain_docs.append(doc)
-        
+        langchain_docs.append(Document(page_content=element['content'], metadata=metadata))
+
     return langchain_docs
+
+if __name__ == "__main__":
+    pdf_file = "CHOTGDP23004V012223.pdf"
+
+    print("Starting PDF parsing...")
+    time_start = time.time()
+
+    docs = create_langchain_document(pdf_file)
+
+    time_end = time.time()
+    print(f"PDF parsing completed in {time_end - time_start:.2f} seconds.")
+    print(f"Total documents created: {len(docs)}")
+
+    with open("parsed_documents.json", "w") as f:
+        json.dump([doc.dict() for doc in docs], f, indent=4)

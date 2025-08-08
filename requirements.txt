@@ -20,7 +20,7 @@ rank_bm25             # For keyword-based (sparse) retrieval in the hybrid searc
 
 # Choose one of the following FAISS libraries based on your hardware:
 faiss-cpu             # For CPU-based vector similarity search [10, 11, 2]
-faiss-gpu           # Uncomment this line and comment out faiss-cpu if you have a CUDA-enabled GPU
+# faiss-gpu           # Uncomment this line and comment out faiss-cpu if you have a CUDA-enabled GPU
 
 # LLM Interaction
 openai                # Official Python client for the OpenAI API (GPT-4)
@@ -32,3 +32,4 @@ pydantic              # For data validation, used heavily by FastAPI
 
 # Optional UI for Demo
 streamlit             # For creating a quick and effective user interface for the demo [13, 14]
+
