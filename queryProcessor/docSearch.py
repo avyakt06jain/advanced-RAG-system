@@ -80,8 +80,13 @@ def semantic_search(query_keywords, faiss_index, documents, top_k=3):
     # --- FIX: Ensure 'documents' is a list before indexing. ---
     # This check handles the case where 'documents.pkl' contains a tuple wrapper.
     if isinstance(documents, tuple):
-        # We assume the list of documents is the first item in the tuple.
-        doc_list = documents[0]
+        # We assume the list of documents is the first item in the tuple,
+        # and that the tuple is not empty.
+        if len(documents) > 0:
+            doc_list = documents[0]
+        else:
+            print("Error: Loaded documents tuple is empty. Cannot retrieve chunks.")
+            return []
     else:
         # If it's already a list or other iterable, use it directly.
         doc_list = documents

@@ -1,41 +1,67 @@
 from keywords import extract_keywords
 from docSearch import load_index_and_documents, semantic_search
+from llmoutputretrival import create_llm_prompt, generate_answer_from_llm
 
 
-def main():
-    # This is the input from the user that our system needs to process.
-    user_prompt = "What are policy conditions for pre-disabled people."
+def run_rag_pipeline(user_prompt):
+    print("--- Starting RAG Pipeline ---")
     print(f"User Prompt: '{user_prompt}'")
     print("-" * 30)
 
-    # Keywords
+    # --- Step 1: Parse the prompt and extract keywords ---
+    print("Step 1: Extracting keywords...")
     query_keywords = extract_keywords(user_prompt)
     print(f"Extracted Keywords: {query_keywords}")
     print("-" * 30)
 
-    # Define the file paths for your pre-built FAISS index and document chunks.
-    index_file_path = "../faiss_index/index.faiss"
-    docs_file_path = "../faiss_index/index.pkl"
+    # --- Step 2: Load the FAISS index and documents ---
+    print("Step 2: Loading FAISS index and documents...")
+    index_file_path = "faiss_index.faiss"
+    docs_file_path = "documents.pkl"
     faiss_index, documents = load_index_and_documents(index_file_path, docs_file_path)
 
-    # Check if the files were loaded successfully before proceeding.
-    if faiss_index and documents:
-        top_k = 3
-        relevant_chunks = semantic_search(
-            query_keywords, faiss_index, documents, top_k=top_k
-        )
+    if not faiss_index or not documents:
+        print("Aborting pipeline due to missing files.")
+        return
 
-        print("\n--- Retrieved Relevant Chunks for Answer Generation ---")
-        for i, chunk in enumerate(relevant_chunks):
-            print(f"\nChunk {i + 1}:")
-            print(chunk)
-            print("-" * 30)
-    else:
-        print(
-            "Could not proceed with semantic search. Please ensure the required files exist."
-        )
+    print("-" * 30)
+
+    # --- Step 3: Perform the semantic search ---
+    print("Step 3: Performing semantic search...")
+    top_k = 3
+    relevant_chunks = semantic_search(
+        query_keywords, faiss_index, documents, top_k=top_k
+    )
+
+    if not relevant_chunks:
+        print("No relevant chunks found. Aborting pipeline.")
+        return
+
+    print("Retrieved Relevant Chunks for Answer Generation:")
+    for i, chunk in enumerate(relevant_chunks):
+        print(f"\nChunk {i + 1}:")
+        print(chunk)
+    print("-" * 30)
+
+    # --- Step 4: Create the final LLM prompt ---
+    print("Step 4: Creating LLM prompt...")
+    llm_prompt = create_llm_prompt(user_prompt, relevant_chunks)
+    print("--- Final Prompt for LLM ---")
+    print(llm_prompt)
+    print("-" * 30)
+
+    # --- Step 5: Generate the final answer from the LLM ---
+    print("Step 5: Generating final answer...")
+    final_answer = generate_answer_from_llm(llm_prompt)
+
+    print("\n--- RAG Pipeline Complete ---")
+    print("\nFinal Generated Answer:")
+    print(final_answer)
+    print("-" * 30)
 
 
-# Run the main function when the script is executed.
+# Main execution block
 if __name__ == "__main__":
-    main()
+    # Define a sample user query to test the entire pipeline
+    query = "QueryPlaceHolder"
+    run_rag_pipeline(query)
