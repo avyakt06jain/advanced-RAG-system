@@ -396,7 +396,7 @@ class DocVectorPipeline:
         docs = self.parse_pdf_to_documents(pdf_path)
         return self.add_documents_with_dedup(docs)
 
-    def retrieve(self, query: str, k: int = 5, score_threshold: Optional[float] = None) -> List[Dict[str, Any]]:
+    # def retrieve(self, query: str, k: int = 5, score_threshold: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Retrieve top-k results for the given query.
         Returns a list of dicts: { 'page_content', 'metadata', 'score' }
@@ -430,6 +430,57 @@ class DocVectorPipeline:
             return filtered
 
         return formatted
+
+    def retrieve(
+        self,
+        query: str,
+        source_pdf: str,
+        k: int = 5,
+        score_threshold: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve top-k results for the given query, restricted to the same PDF.
+        - source_pdf: PDF filename or unique source identifier to match in metadata['source'].
+        - score_threshold: if provided, filters out results with score > threshold 
+        (depending on FAISS scoring sign; smaller is better for cosine/L2).
+        Returns: List[dict] with keys: page_content, metadata, score.
+        """
+        if self.faiss is None:
+            print("FAISS index is empty. No retrieval possible.")
+            return []
+
+        try:
+            results = self.faiss.similarity_search_with_score(query, k=20)  # get more for filtering
+        except Exception as e:
+            print(f"Error during similarity search: {e}")
+            return []
+
+        # Filter by the same PDF source
+        filtered_by_source = [
+            (doc, score) for doc, score in results
+            if doc.metadata.get("source") == source_pdf
+        ]
+
+        # Apply score threshold if given
+        if score_threshold is not None:
+            filtered_by_source = [
+                (doc, score) for doc, score in filtered_by_source
+                if score <= score_threshold
+            ]
+
+        # Limit to top-k
+        filtered_by_source = filtered_by_source[:k]
+
+        # Format output
+        return [
+            {
+                "page_content": getattr(doc, "page_content", None),
+                "metadata": getattr(doc, "metadata", None),
+                "score": score
+            }
+            for doc, score in filtered_by_source
+        ]
+
 
     def save(self):
         """
@@ -482,7 +533,8 @@ def chunk_list(lst: List[Any], chunk_size: int):
 
 
 if __name__ == "__main__":
-    PDF_FILE = "CHOTGDP23004V012223.pdf"
+    PDF_FILE = "policy.pdf"
+    # PDF_FILE = "CHOTGDP23004V012223.pdf"
     PERSIST_DIR = "faiss_index"
     DEDUP_PATH = "dedup.json"
     EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -505,8 +557,8 @@ if __name__ == "__main__":
     pipeline.save()
 
     # Example retrieval
-    query = "What does the policy say about user data retention?"
-    results = pipeline.retrieve(query, k=5, score_threshold=None)
+    query = "What is the grace period for premium payment under the National Parivar Mediclaim Plus Policy?"
+    results = pipeline.retrieve(query, PDF_FILE, k=5, score_threshold=None)
     print("Top retrieval results:")
     for i, r in enumerate(results, 1):
         print(f"\n--- Result {i} (score={r['score']}) ---")
