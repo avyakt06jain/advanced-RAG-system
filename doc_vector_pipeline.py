@@ -19,11 +19,12 @@ Usage:
 """
 
 import os
+import gc
 import json
 import time
 import hashlib
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 from typing import List, Dict, Any, Optional, Tuple
 
 import fitz
@@ -195,6 +196,89 @@ def process_page_worker(pdf_path: str, page_num: int, table_pages: List[int]) ->
         return []
 
 
+
+# --- Configuration Constants ---
+HEADER_FOOTER_MARGIN = 0.08
+REPEATING_CONTENT_THRESHOLD = 0.5
+TABLE_DETECTION_TOLERANCE = 5
+MIN_COLUMNS_FOR_TABLE = 2
+MIN_ITEMS_PER_COLUMN = 3
+SPANNING_HEADER_FACTOR = 1.8
+CAPTION_SEARCH_TOLERANCE = 15
+
+def process_page_single_pass(args: tuple) -> tuple:
+    """
+    OPTIMIZED WORKER: Processes a single page in one pass.
+    
+    Returns a tuple containing:
+    1. A list of all extracted page elements (text/tables).
+    2. A list of potential header/footer texts found on this page.
+    """
+    pdf_path, page_num = args
+    doc = fitz.open(pdf_path)
+    page = doc.load_page(page_num)
+    
+    page_elements = []
+    header_footer_candidates = []
+    
+    # --- Part 1: PRECISE TEXT EXTRACTION & HEADER/FOOTER IDENTIFICATION ---
+    page_height = page.rect.height
+    header_margin = page_height * HEADER_FOOTER_MARGIN
+    footer_margin = page_height * (1 - HEADER_FOOTER_MARGIN)
+
+    words = page.get_text("words")
+    if not words:
+        doc.close()
+        return [], []
+
+    words.sort(key=lambda w: (w[1], w[0]))
+
+    paragraphs = []
+    current_para = [words[0]]
+    for i in range(1, len(words)):
+        prev_word, curr_word = words[i-1], words[i]
+        vertical_gap = curr_word[1] - prev_word[3]
+        same_line = abs(curr_word[1] - prev_word[1]) < 2
+        line_height = max(10, prev_word[3] - prev_word[1]) # Use max to avoid division by zero for small elements
+        
+        if not same_line and vertical_gap > (line_height * 0.7):
+            para_text = " ".join(w[4] for w in current_para)
+            para_bbox = fitz.Rect(current_para[0][:4])
+            for w in current_para[1:]:
+                para_bbox.include_rect(w[:4])
+            paragraphs.append({"text": para_text, "bbox": para_bbox.irect})
+            current_para = [curr_word]
+        else:
+            current_para.append(curr_word)
+    
+    if current_para:
+        para_text = " ".join(w[4] for w in current_para)
+        para_bbox = fitz.Rect(current_para[0][:4])
+        for w in current_para[1:]:
+            para_bbox.include_rect(w[:4])
+        paragraphs.append({"text": para_text, "bbox": para_bbox.irect, "source": pdf_path})
+
+    # Now, categorize paragraphs as main content or potential headers/footers
+    for para in paragraphs:
+        para_text = para["text"].strip()
+        if not para_text:
+            continue
+            
+        para_bbox = para["bbox"]
+        is_header_footer = para_bbox.y0 < header_margin or para_bbox.y1 > footer_margin
+        
+        if is_header_footer:
+            header_footer_candidates.append(para_text)
+        else:
+            page_elements.append({
+                "type": "text", "page_num": page_num, "content": para_text, "bbox": list(para_bbox), "source": pdf_path
+            })
+            
+    doc.close()
+    return sorted(page_elements, key=lambda x: x['bbox'][1]), header_footer_candidates
+
+
+
 class DocVectorPipeline:
     def __init__(
         self,
@@ -268,63 +352,112 @@ class DocVectorPipeline:
 
         self.total_docs = 0 if self.faiss is None else getattr(self.faiss, "index", None) and len(self.faiss.index.reconstruct_n(0, 0)) or 0
 
+    # def parse_pdf_to_documents(self, pdf_path: str) -> List[Document]:
+        # """
+        # Parses the PDF using worker processes (parsing only), merges headings with paragraphs,
+        # and returns a list of langchain_core.documents.Document objects ready for embedding.
+        # """
+        # if not os.path.exists(pdf_path):
+        #     raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+        # print("Opening PDF to get page count...")
+        # doc = fitz.open(pdf_path)
+        # num_pages = len(doc)
+        # doc.close()
+
+        # print("Classifying pages for table detection...")
+        # table_pages = classify_pages(pdf_path)
+        # print(f"Detected table pages: {table_pages}")
+
+        # parsed_elements_by_page: Dict[int, List[Dict[str, Any]]] = {}
+
+        # print(f"Parsing {num_pages} pages in parallel (parsing only)...")
+        # with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+        #     futures = {
+        #         executor.submit(process_page_worker, pdf_path, pnum, table_pages): pnum
+        #         for pnum in range(num_pages)
+        #     }
+        #     for future in tqdm(as_completed(futures), total=len(futures)):
+        #         pnum = futures[future]
+        #         try:
+        #             elems = future.result()
+        #             parsed_elements_by_page[pnum] = elems
+        #         except Exception as e:
+        #             print(f"Error parsing page {pnum + 1}: {e}")
+        #             parsed_elements_by_page[pnum] = []
+
+        # # Convert parsed elements into Document objects (after merging headings+paragraphs)
+        # all_documents: List[Document] = []
+        # for pnum in range(num_pages):
+        #     elems = parsed_elements_by_page.get(pnum, [])
+        #     if not elems:
+        #         continue
+        #     merged = merge_headings_with_paragraphs(elems)
+        #     for el in merged:
+        #         metadata = {
+        #             "source": os.path.basename(pdf_path),
+        #             "page_number": el["page_num"] + 1,
+        #             "type": el["type"],
+        #             "bounding_box": el.get("bbox")
+        #         }
+        #         content = el.get("content", "")
+
+        #         if isinstance(content, bytes):
+        #             content = content.decode("utf-8", errors="ignore")
+        #         doc_obj = Document(page_content=content, metadata=metadata)
+        #         all_documents.append(doc_obj)
+
+        # print(f"Total Documents created from PDF: {len(all_documents)}")
+        # return all_documents
+
+
     def parse_pdf_to_documents(self, pdf_path: str) -> List[Document]:
-        """
-        Parses the PDF using worker processes (parsing only), merges headings with paragraphs,
-        and returns a list of langchain_core.documents.Document objects ready for embedding.
-        """
-        if not os.path.exists(pdf_path):
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
-        print("Opening PDF to get page count...")
         doc = fitz.open(pdf_path)
-        num_pages = len(doc)
+        num_pages = doc.page_count
         doc.close()
+        
+        if num_pages == 0:
+            return []
+            
+        page_args = [(pdf_path, i) for i in range(num_pages)]
+        
+        all_page_elements = [None] * num_pages
+        all_header_footer_candidates = []
+        
+        with ThreadPoolExecutor() as executor:
+            results = executor.map(process_page_single_pass, page_args)
+            for i, (page_elements, hf_candidates) in enumerate(results):
+                all_page_elements[i] = page_elements
+                all_header_footer_candidates.extend(hf_candidates)
 
-        print("Classifying pages for table detection...")
-        table_pages = classify_pages(pdf_path)
-        print(f"Detected table pages: {table_pages}")
+        # --- Post-processing: Calculate suppression list and filter ---
+        header_footer_counts = defaultdict(int)
+        for text in all_header_footer_candidates:
+            header_footer_counts[text] += 1
+            
+        suppression_list = {
+            text for text, count in header_footer_counts.items()
+            if count / num_pages > REPEATING_CONTENT_THRESHOLD
+        }
+        
+        # Final filtering pass (very fast)
+        final_elements = []
+        for page_elements in all_page_elements:
+            for element in page_elements:
+                if element["content"] not in suppression_list:
+                    del element["bbox"]  # Clean up bbox as it's not needed
+                    doc = Document(page_content=element["content"], metadata={
+                        "page_number": element["page_num"] + 1,
+                        "source": os.path.basename(pdf_path),
+                        "type": element["type"],
+                    })
+                    final_elements.append(doc)
 
-        parsed_elements_by_page: Dict[int, List[Dict[str, Any]]] = {}
+        gc.collect()
 
-        print(f"Parsing {num_pages} pages in parallel (parsing only)...")
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(process_page_worker, pdf_path, pnum, table_pages): pnum
-                for pnum in range(num_pages)
-            }
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                pnum = futures[future]
-                try:
-                    elems = future.result()
-                    parsed_elements_by_page[pnum] = elems
-                except Exception as e:
-                    print(f"Error parsing page {pnum + 1}: {e}")
-                    parsed_elements_by_page[pnum] = []
+        # return json.dumps(final_elements, indent=2, ensure_ascii=False)
+        return final_elements
 
-        # Convert parsed elements into Document objects (after merging headings+paragraphs)
-        all_documents: List[Document] = []
-        for pnum in range(num_pages):
-            elems = parsed_elements_by_page.get(pnum, [])
-            if not elems:
-                continue
-            merged = merge_headings_with_paragraphs(elems)
-            for el in merged:
-                metadata = {
-                    "source": os.path.basename(pdf_path),
-                    "page_number": el["page_num"] + 1,
-                    "type": el["type"],
-                    "bounding_box": el.get("bbox")
-                }
-                content = el.get("content", "")
-
-                if isinstance(content, bytes):
-                    content = content.decode("utf-8", errors="ignore")
-                doc_obj = Document(page_content=content, metadata=metadata)
-                all_documents.append(doc_obj)
-
-        print(f"Total Documents created from PDF: {len(all_documents)}")
-        return all_documents
 
     def add_documents_with_dedup(self, documents: List[Document], save_after_add: bool = True) -> Tuple[int, int]:
         """

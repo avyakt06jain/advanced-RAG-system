@@ -1,2 +1,4 @@
 .env
 .DS_Store
+llm_responder.py
+__pycache__
