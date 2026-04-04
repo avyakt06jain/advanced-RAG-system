@@ -2,12 +2,6 @@
 
 > A production-ready Retrieval-Augmented Generation (RAG) system built for HackRX 6.0 — designed to ingest complex insurance policy PDFs and answer natural language questions with verifiable citations.
 
-## Demo Video
-
-<!-- TODO: Record and embed demo video here -->
-<!-- Example: -->
-<!-- [![Demo Video](https://img.youtube.com/vi/YOUR_VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID) -->
-
 ## Table of Contents
 
 - [Overview](#overview)
