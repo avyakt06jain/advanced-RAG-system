@@ -3,7 +3,7 @@ uvicorn[standard]
 python-dotenv
 pydantic
 sentence-transformers
-google-generativeai
+google-genai
 requests
 faiss-cpu
 numpy
@@ -11,3 +11,4 @@ PyMuPDF
 tqdm
 camelot-py[cv]
 pandas
+rank-bm25
