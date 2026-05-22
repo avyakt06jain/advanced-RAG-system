@@ -1,6 +1,6 @@
 # Advanced RAG System for Insurance Policy Analysis
 
-> A production-ready Retrieval-Augmented Generation (RAG) system built for HackRX 6.0 — designed to ingest complex insurance policy PDFs and answer natural language questions with verifiable citations.
+> A production-ready Retrieval-Augmented Generation (RAG) system designed to ingest complex insurance policy PDFs and answer natural language questions with verifiable citations.
 
 ## Table of Contents
 
@@ -91,7 +91,6 @@ advanced-RAG-system/
 ├── Dockerfile                          # Container configuration
 ├── .env.example                        # Environment variables template
 ├── .gitignore
-├── hackrx/                             # Hackathon reference materials
 └── README.md                           # This file
 ```
 
@@ -178,7 +177,7 @@ GET /health
 ### Process Document & Answer Queries
 
 ```
-POST /hackrx/run
+POST /api/run
 Authorization: Bearer <API_KEY>
 ```
 
@@ -248,4 +247,4 @@ Or test via Swagger UI at `http://127.0.0.1:8000/docs`.
 
 ## License
 
-This project was built for HackRX 6.0.
+This project is open-source.
